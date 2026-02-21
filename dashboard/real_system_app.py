@@ -201,19 +201,29 @@ class RealTimeDataCollector:
             print(f"DEBUG: train_results type: {type(train_results)}")
             print(f"DEBUG: train_results len: {len(train_results)}")
             
-            accuracy = 0.0 # Default
+            val_accuracy = 0.0 # Default
             
             if len(train_results) == 5:
-                weights, model_hash, avg_loss, accuracy, raw_weights = train_results
+                weights, model_hash, avg_loss, val_accuracy, raw_weights = train_results
                 # Save RAW weights for real-time inference testing in the dashboard
                 st.session_state.system_state['current_model_weights'] = raw_weights
+                
+                # Report scientifically accurate validation stats
+                st.success(f"✅ Training Complete (Validation Accuracy: {val_accuracy*100:.2f}%)")
+                st.session_state.system_state['accuracy_history'].append(val_accuracy)
+                st.session_state.system_state['loss_history'].append(avg_loss)
             elif len(train_results) == 4:
-                weights, model_hash, avg_loss, accuracy = train_results
+                weights, model_hash, avg_loss, val_accuracy = train_results
                 # If we only have 4, we might be forced to use encrypted (not ideal)
                 st.session_state.system_state['current_model_weights'] = weights
+                st.success(f"✅ Training Complete (Validation Accuracy: {val_accuracy*100:.2f}%)")
+                st.session_state.system_state['accuracy_history'].append(val_accuracy)
+                st.session_state.system_state['loss_history'].append(avg_loss)
             elif len(train_results) == 3:
                  # Backwards compatibility or error case
                 weights, model_hash, avg_loss = train_results
+                st.warning(f"⚠️ Training Complete (No Validation Accuracy reported)")
+                st.session_state.system_state['loss_history'].append(avg_loss)
             else:
                 weights, model_hash = train_results
                 avg_loss = 0.999 # Fallback DEBUG VALUE
