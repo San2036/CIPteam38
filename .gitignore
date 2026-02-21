@@ -1,0 +1,22 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Solidity / Truffle
+build/
+.truffle/
+
+# Streamlit
+.streamlit/
+static/
+
+# Dataset (Optional: users often don't want to push large CSVs to GitHub)
+# synthetic_fraud_dataset.csv
+
+# OS
+.DS_Store
+Thumbs.db
