@@ -124,7 +124,11 @@ def train_local(model: nn.Module, train_loader: DataLoader, epochs: int = 1, lr:
     return noisy_weights, avg_loss, accuracy
 
 def train_local_standalone_v2(input_size: int = 17, hidden_size: int = 64, num_classes: int = 2, 
-                          data_node_id: int = 1, total_nodes: int = 2, epochs: int = 5, dp_noise_scale: float = 0.01) -> Tuple[List[float], str, float]:
+                          data_node_id: int = 1, total_nodes: int = 2, epochs: int = 5, dp_noise_scale: float = 0.01) -> Tuple[List[float], str, float, float, List[float]]:
+    """
+    Trains a model locally for a specific node, encrypts the weights, and generates a hash.
+    Returns: (encrypted_weights, model_hash, average_loss, accuracy, trained_weights)
+    """
     from .model import create_model
     
     # 1. Initialize Model
@@ -135,7 +139,7 @@ def train_local_standalone_v2(input_size: int = 17, hidden_size: int = 64, num_c
         train_loader, _ = load_and_preprocess_data(node_id=data_node_id, total_nodes=total_nodes)
     except Exception as e:
         print(f"Error loading dataset: {e}")
-        return [], "", 0.0
+        return [], "", 0.0, 0.0, []
     
     # 3. Train Locally
     # Update unpacking to include accuracy
@@ -152,7 +156,7 @@ def train_local_standalone_v2(input_size: int = 17, hidden_size: int = 64, num_c
     weights_str = str(encrypted_weights)
     model_hash = hashlib.sha256(weights_str.encode()).hexdigest()
     
-    return encrypted_weights, model_hash, avg_loss, accuracy
+    return encrypted_weights, model_hash, avg_loss, accuracy, trained_weights
 
 if __name__ == "__main__":
     weights, model_hash = train_local_standalone()

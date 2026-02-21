@@ -24,22 +24,17 @@ class SimpleNN(nn.Module):
         return weights
 
     def set_weights(self, weights):
-        # Determine shapes first
-        fc1_w_shape = self.fc1.weight.shape
-        fc1_b_shape = self.fc1.bias.shape
-        fc2_w_shape = self.fc2.weight.shape
-        fc2_b_shape = self.fc2.bias.shape
-        
-        # Slicing indices
-        fc1_w_end = fc1_w_shape[0] * fc1_w_shape[1]
-        fc1_b_end = fc1_w_end + fc1_b_shape[0]
-        fc2_w_end = fc1_b_end + fc2_w_shape[0] * fc2_w_shape[1]
-        
-        # Reconstruct tensors
-        self.fc1.weight.data = torch.tensor(weights[:fc1_w_end]).reshape(fc1_w_shape).float()
-        self.fc1.bias.data = torch.tensor(weights[fc1_w_end:fc1_b_end]).reshape(fc1_b_shape).float()
-        self.fc2.weight.data = torch.tensor(weights[fc1_b_end:fc2_w_end]).reshape(fc2_w_shape).float()
-        self.fc2.bias.data = torch.tensor(weights[fc2_w_end:]).reshape(fc2_b_shape).float()
+        state_dict = self.state_dict()
+        idx = 0
+        for key in state_dict.keys():
+            param = state_dict[key]
+            num_elements = param.numel()
+            # Precisely take only what we need for this parameter
+            flat_slice = weights[idx : idx + num_elements]
+            # Convert to tensor and reshape
+            state_dict[key] = torch.tensor(flat_slice).reshape(param.shape).float()
+            idx += num_elements
+        self.load_state_dict(state_dict)
     
     def get_model_hash(self):
         import hashlib
