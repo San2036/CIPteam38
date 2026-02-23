@@ -215,7 +215,7 @@ class RealTimeDataCollector:
             train_results = train_local_standalone_v2(
                 input_size=17,
                 epochs=1,
-                dp_noise_scale=2.0,
+                dp_noise_scale=0.2,
                 data_node_id=st.session_state.node_id,
                 total_nodes=2,
                 initial_weights=global_weights
