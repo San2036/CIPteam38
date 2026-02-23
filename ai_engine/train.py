@@ -78,9 +78,11 @@ def add_differential_privacy_noise(weights: List[float], noise_scale: float = 0.
         noisy_weights.append(weight + noise)
     return noisy_weights
 
-def train_local(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 1, lr: float = 0.01, dp_noise_scale: float = 0.01) -> Tuple[List[float], float, float, float]:
+from sklearn.metrics import precision_score, recall_score, f1_score
+
+def train_local(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 1, lr: float = 0.01, dp_noise_scale: float = 0.01) -> Tuple[List[float], float, float, float, float, float, float]:
     """
-    Trains the model locally and returns the updated weights, average loss, train_acc, and val_acc.
+    Trains the model locally and returns (weights, avg_loss, train_acc, val_acc, precision, recall, f1).
     """
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -112,46 +114,72 @@ def train_local(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
 
     # Validation Phase (The "Final Exam")
     model.eval()
+    all_preds = []
+    all_labels = []
     val_correct = 0
     val_total = 0
+    
     with torch.no_grad():
         for inputs, labels in val_loader:
             outputs = model(inputs)
             _, predicted = torch.max(outputs.data, 1)
+            
             val_total += labels.size(0)
             val_correct += (predicted == labels).sum().item()
             
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            
     val_accuracy = val_correct / val_total if val_total > 0 else 0
-    print(f"Validation Accuracy: {val_accuracy:.4f}")
+    
+    # Calculate Advanced Metrics (Fraud is class 1)
+    precision = float(precision_score(all_labels, all_preds, zero_division=0))
+    recall = float(recall_score(all_labels, all_preds, zero_division=0))
+    f1 = float(f1_score(all_labels, all_preds, zero_division=0))
+    
+    print(f"Metrics -> Accuracy: {val_accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
     
     weights = model.get_weights()
     noisy_weights = add_differential_privacy_noise(weights, dp_noise_scale)
     
-    return noisy_weights, avg_loss, train_accuracy, val_accuracy
+    return noisy_weights, avg_loss, train_accuracy, val_accuracy, precision, recall, f1
 
 def train_local_standalone_v2(input_size: int = 17, hidden_size: int = 64, num_classes: int = 2, 
-                          data_node_id: int = 1, total_nodes: int = 2, epochs: int = 5, dp_noise_scale: float = 0.01) -> Tuple[List[float], str, float, float, List[float]]:
+                          data_node_id: int = 1, total_nodes: int = 2, epochs: int = 5, dp_noise_scale: float = 0.01,
+                          initial_weights: List[float] = None) -> Tuple[List[float], str, float, dict, List[float]]:
     """
-    Trains a model locally with a validation split.
-    Returns: (encrypted_weights, model_hash, average_loss, val_accuracy, trained_weights)
+    Trains a model locally with a validation split and returns advanced metrics.
+    Returns: (encrypted_weights, model_hash, average_loss, metrics_dict, trained_weights)
     """
     from .model import create_model
     model = create_model(input_size, hidden_size, num_classes)
+    
+    if initial_weights is not None:
+        print(f"Node {data_node_id}: Initializing model with Federated Global Weights...")
+        model.set_weights(initial_weights)
     
     # 1. Load Data with Split
     train_loader, val_loader, _ = load_and_preprocess_data(node_id=data_node_id, total_nodes=total_nodes)
     
     # 2. Train and Validate
-    trained_weights, avg_loss, train_acc, val_acc = train_local(model, train_loader, val_loader, epochs, dp_noise_scale=dp_noise_scale)
+    results = train_local(model, train_loader, val_loader, epochs, dp_noise_scale=dp_noise_scale)
+    trained_weights, avg_loss, train_acc, val_acc, prec, rec, f1 = results
     
-    # 3. Encrypt and Hash (Using HAN key size 2000 for blockchain uniformity)
+    metrics = {
+        "accuracy": val_acc,
+        "precision": prec,
+        "recall": rec,
+        "f1_score": f1
+    }
+    
+    # 3. Encrypt and Hash
     han = HANEncryption(key_size=2000)
     encrypted_weights = han.encrypt_weights(trained_weights)
     
     import hashlib
     model_hash = hashlib.sha256(str(encrypted_weights).encode()).hexdigest()
     
-    return encrypted_weights, model_hash, avg_loss, val_acc, trained_weights
+    return encrypted_weights, model_hash, avg_loss, metrics, trained_weights
 
 if __name__ == "__main__":
     weights, model_hash = train_local_standalone()

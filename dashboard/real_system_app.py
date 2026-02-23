@@ -53,7 +53,7 @@ def init_session_state():
             'training_rounds': 0,
             'global_model_version': 'v1.0',
             'security_score': 95,
-            'training_loss': [],
+            'loss_history': [],
             'real_transactions': [],
             'node_health': {},
             'real_model_updates': [],
@@ -63,9 +63,24 @@ def init_session_state():
             'blockchain_connected': False,
             'contract_address': None,
             'real_time_data': [],
-            'current_model_weights': None, # Add this for inference testing
-            'accuracy_history': []
+            'current_model_weights': None,
+            'accuracy_history': [],
+            'precision_history': [],
+            'recall_history': [],
+            'f1_history': []
         }
+    else:
+        # Ensure new keys are added to existing sessions to prevent KeyErrors
+        new_keys = {
+            'accuracy_history': [],
+            'precision_history': [],
+            'recall_history': [],
+            'f1_history': [],
+            'current_model_weights': None
+        }
+        for key, default_val in new_keys.items():
+            if key not in st.session_state.system_state:
+                st.session_state.system_state[key] = default_val
     
     if 'is_running' not in st.session_state:
         st.session_state.is_running = False
@@ -186,16 +201,24 @@ class RealTimeDataCollector:
         """Execute real training step with actual PyTorch integration"""
         try:
             import ai_engine.train
+            import ai_engine.aggregator as aggregator
             importlib.reload(ai_engine.train)
+            importlib.reload(aggregator)
             from ai_engine.train import train_local_standalone_v2
             
-            # Execute real training on real dataset
+            # 0. Sync with Global Model
+            global_weights = aggregator.load_global_model()
+            if global_weights:
+                st.write("🌍 Synchronizing with latest Global Model knowledge...")
+
+            # 1. Execute real training on real dataset
             train_results = train_local_standalone_v2(
                 input_size=17,
                 epochs=1,
-                dp_noise_scale=0.01,
+                dp_noise_scale=2.0,
                 data_node_id=st.session_state.node_id,
-                total_nodes=2
+                total_nodes=2,
+                initial_weights=global_weights
             )
             
             print(f"DEBUG: train_results type: {type(train_results)}")
@@ -204,29 +227,66 @@ class RealTimeDataCollector:
             val_accuracy = 0.0 # Default
             
             if len(train_results) == 5:
-                weights, model_hash, avg_loss, val_accuracy, raw_weights = train_results
+                weights, model_hash, avg_loss, metrics_data, raw_weights = train_results
                 # Save RAW weights for real-time inference testing in the dashboard
                 st.session_state.system_state['current_model_weights'] = raw_weights
                 
+                # Extract metrics with extreme robustness
+                if isinstance(metrics_data, dict):
+                    val_accuracy = metrics_data.get('accuracy', 0.0)
+                    precision = metrics_data.get('precision', 0.0)
+                    recall = metrics_data.get('recall', 0.0)
+                    f1 = metrics_data.get('f1_score', 0.0)
+                else:
+                    val_accuracy = metrics_data if isinstance(metrics_data, (int, float)) else 0.0
+                    precision, recall, f1 = 0.0, 0.0, 0.0
+
+                # FORCED FLOAT CONVERSION
+                try:
+                    val_accuracy = float(val_accuracy)
+                    precision = float(precision)
+                    recall = float(recall)
+                    f1 = float(f1)
+                except:
+                    print(f"DEBUG ERROR: Could not convert metrics to float. val_acc type: {type(val_accuracy)}")
+                    val_accuracy, precision, recall, f1 = 0.0, 0.0, 0.0, 0.0
+                
                 # Report scientifically accurate validation stats
-                st.success(f"✅ Training Complete (Validation Accuracy: {val_accuracy*100:.2f}%)")
+                if isinstance(val_accuracy, (int, float)):
+                    st.success(f"✅ Training Complete (Accuracy: {val_accuracy*100:.2f}%, Precision: {precision:.2f}, Recall: {recall:.2f}, F1: {f1:.2f})")
+                else:
+                    st.error(f"⚠️ Metrics Type Error: val_accuracy is {type(val_accuracy)}")
+
                 st.session_state.system_state['accuracy_history'].append(val_accuracy)
-                st.session_state.system_state['loss_history'].append(avg_loss)
-            elif len(train_results) == 4:
-                weights, model_hash, avg_loss, val_accuracy = train_results
-                # If we only have 4, we might be forced to use encrypted (not ideal)
-                st.session_state.system_state['current_model_weights'] = weights
-                st.success(f"✅ Training Complete (Validation Accuracy: {val_accuracy*100:.2f}%)")
-                st.session_state.system_state['accuracy_history'].append(val_accuracy)
-                st.session_state.system_state['loss_history'].append(avg_loss)
-            elif len(train_results) == 3:
-                 # Backwards compatibility or error case
-                weights, model_hash, avg_loss = train_results
-                st.warning(f"⚠️ Training Complete (No Validation Accuracy reported)")
-                st.session_state.system_state['loss_history'].append(avg_loss)
+                st.session_state.system_state['precision_history'].append(precision)
+                st.session_state.system_state['recall_history'].append(recall)
+                st.session_state.system_state['f1_history'].append(f1)
+                st.session_state.system_state['loss_history'].append(float(avg_loss))
+
+                # --- NEW: Federated Learning Weight Exchange ---
+                # 1. Save local weights for aggregation
+                weights_path = f"shared_weights/node_{st.session_state.node_id}.pt"
+                torch.save(raw_weights, weights_path)
+                
+                # 2. Check if we can aggregate (FedAvg)
+                # Look for other node's weights
+                all_node_weights = []
+                for n_id in [1, 2]:
+                    path = f"shared_weights/node_{n_id}.pt"
+                    if os.path.exists(path):
+                        try:
+                            w = torch.load(path)
+                            all_node_weights.append(w)
+                        except:
+                            pass
+                
+                if len(all_node_weights) >= 2:
+                    st.write("🤖 Both nodes have results! Merging intelligence...")
+                    global_w = aggregator.federated_average(all_node_weights)
+                    aggregator.save_global_model(global_w)
+                    st.success("🧠 Federated Aggregation SUCCESS: Global Model v.Next updated!")
             else:
-                weights, model_hash = train_results
-                avg_loss = 0.999 # Fallback DEBUG VALUE
+                st.error(f"⚠️ Training returned unexpected results format: {len(train_results)} items")
             
             # ATTACK SIMULATION
             if st.session_state.get('attack_mode', False):
@@ -274,7 +334,7 @@ class RealTimeDataCollector:
                 'weights_count': len(weights),
                 'timestamp': datetime.now().strftime('%H:%M:%S'),
                 'training_loss': avg_loss,
-                'accuracy': accuracy
+                'accuracy': val_accuracy
             }
         except Exception as e:
             st.error(f"❌ Error in real training execution: {e}")
@@ -292,23 +352,15 @@ class RealTimeDataCollector:
                 if real_txs:
                     st.session_state.system_state['real_transactions'] = real_txs[:10]  # Keep last 10
                 
-                # Simulate real training data
-                training_data = self.simulate_real_training_data()
-                if training_data:
-                    st.session_state.system_state['real_model_updates'].insert(0, training_data)
-                    
-                    # Update training loss
-                    st.session_state.system_state['training_loss'].append(training_data['training_loss'])
-                    if len(st.session_state.system_state['training_loss']) > 20:
-                        st.session_state.system_state['training_loss'] = st.session_state.system_state['training_loss'][-20:]
-                    
-                    # Update training rounds
-                    st.session_state.system_state['training_rounds'] += 1
-                    
-                    # Update global model version
-                    if st.session_state.system_state['training_rounds'] % 5 == 0:
-                        version_num = st.session_state.system_state['training_rounds'] // 5 + 1
-                        st.session_state.system_state['global_model_version'] = f'v{version_num}.0'
+                # Simulate real training rounds logic (Loss and Round count)
+                # Note: Real training is actually performed by execute_real_training_step manually, 
+                # so this loop just monitors the blockchain and state.
+                pass
+                
+                # Update global model version
+                if st.session_state.system_state['training_rounds'] > 0 and st.session_state.system_state['training_rounds'] % 5 == 0:
+                    version_num = st.session_state.system_state['training_rounds'] // 5 + 1
+                    st.session_state.system_state['global_model_version'] = f'v{version_num}.0'
                 
                 # Simulate node activity
                 if st.session_state.system_state['active_nodes'] < 3:
@@ -352,6 +404,11 @@ def display_overview():
             st.session_state.system_state['active_nodes'],
             delta=None
         )
+        # Detailed list of Node Numbers
+        if st.session_state.system_state['node_health']:
+            active_list = [f"#{n.split('_')[1]}" for n, h in st.session_state.system_state['node_health'].items() if h > 0]
+            if active_list:
+                st.caption(f"IDs: {', '.join(active_list)}")
     
     with col2:
         st.metric(
@@ -383,10 +440,10 @@ def display_real_training():
     with col1:
         st.subheader("📈 Real Training Progress")
         
-        if st.session_state.system_state['training_loss']:
+        if st.session_state.system_state['loss_history']:
             df_loss = pd.DataFrame({
-                'Round': range(1, len(st.session_state.system_state['training_loss']) + 1),
-                'Loss': st.session_state.system_state['training_loss']
+                'Round': range(1, len(st.session_state.system_state['loss_history']) + 1),
+                'Loss': st.session_state.system_state['loss_history']
             })
             
             fig = px.line(
@@ -425,19 +482,51 @@ def display_real_training():
     with col2:
         st.subheader("📊 Real Metrics")
         
-        if st.session_state.system_state['training_loss']:
-            latest_loss = st.session_state.system_state['training_loss'][-1]
-            avg_loss = np.mean(st.session_state.system_state['training_loss'])
+        if st.session_state.system_state['loss_history']:
+            latest_loss = st.session_state.system_state['loss_history'][-1]
+            avg_loss = np.mean(st.session_state.system_state['loss_history'])
             
             st.metric("Latest Loss", f"{latest_loss:.3f}")
             st.metric("Average Loss", f"{avg_loss:.3f}")
             
+            if st.session_state.system_state['accuracy_history']:
+                latest_acc = st.session_state.system_state['accuracy_history'][-1]
+                if isinstance(latest_acc, (int, float)):
+                    st.metric("Validation Accuracy", f"{latest_acc*100:.2f}%")
+                else:
+                    st.metric("Validation Accuracy", "N/A (Type Error)")
+            
+            if st.session_state.system_state['f1_history']:
+                st.metric("Latest F1-Score", f"{st.session_state.system_state['f1_history'][-1]:.3f}")
+
             if latest_loss < avg_loss:
                 st.success("📉 Model improving!")
             else:
                 st.warning("📈 Model needs more training")
         else:
             st.info("⏳ No training data yet")
+
+    st.markdown("---")
+    st.subheader("🧪 Advanced Classification Metrics")
+    if st.session_state.system_state['precision_history']:
+        m_col1, m_col2, m_col3 = st.columns(3)
+        with m_col1:
+            st.metric("Precision", f"{st.session_state.system_state['precision_history'][-1]:.3f}", help="Detects False Alarms")
+        with m_col2:
+            st.metric("Recall", f"{st.session_state.system_state['recall_history'][-1]:.3f}", help="Detects Missed Fraud")
+        with m_col3:
+            st.metric("F1-Score", f"{st.session_state.system_state['f1_history'][-1]:.3f}", help="Balance of Precision/Recall")
+            
+        df_metrics = pd.DataFrame({
+            'Round': range(1, len(st.session_state.system_state['precision_history']) + 1),
+            'Precision': st.session_state.system_state['precision_history'],
+            'Recall': st.session_state.system_state['recall_history'],
+            'F1': st.session_state.system_state['f1_history']
+        })
+        fig_metrics = px.line(df_metrics, x='Round', y=['Precision', 'Recall', 'F1'], title='Advanced Metrics Trends')
+        st.plotly_chart(fig_metrics, use_container_width=True)
+    else:
+        st.info("Advanced metrics will appear after the first training round.")
     
     # Real training controls
     st.subheader("🎮 Real System Controls")
@@ -453,94 +542,13 @@ def display_real_training():
     
     with col_c:
         if st.button("🔄 Reset Data"):
-            st.session_state.system_state['training_loss'] = []
+            st.session_state.system_state['loss_history'] = []
+            st.session_state.system_state['accuracy_history'] = []
+            st.session_state.system_state['precision_history'] = []
+            st.session_state.system_state['recall_history'] = []
+            st.session_state.system_state['f1_history'] = []
             st.session_state.system_state['training_rounds'] = 0
             st.session_state.system_state['real_model_updates'] = []
-    # Real training simulation loop
-    if st.session_state.is_running:
-        placeholder = st.empty()
-        with placeholder.container():
-            st.info("🔄 Processing real-time updates...")
-            collector = RealTimeDataCollector()
-            
-            # 1. Connect (if needed)
-            # Re-connect if strictly needed or if the object is fresh and missing contract
-            if not st.session_state.system_state['blockchain_connected'] or not hasattr(collector, 'contract'):
-                collector.connect_blockchain()
-            
-            # 2. Get Real Transactions
-            real_txs = []
-            if st.session_state.system_state['blockchain_connected']:
-                real_txs = collector.get_real_transactions()
-                if real_txs:
-                     # Keep last 10, preventing duplicates if possible
-                     existing_hashes = {tx['hash'] for tx in st.session_state.system_state['real_transactions']}
-                     new_txs = [tx for tx in real_txs if tx['hash'] not in existing_hashes]
-                     if new_txs:
-                        st.session_state.system_state['real_transactions'] = new_txs + st.session_state.system_state['real_transactions']
-                        st.session_state.system_state['real_transactions'] = st.session_state.system_state['real_transactions'][:10]
-
-            with st.expander("🕵️‍♂️ Debug Info", expanded=True):
-                st.write(f"**Connected:** {st.session_state.system_state['blockchain_connected']}")
-                st.write(f"**Contract:** {st.session_state.system_state['contract_address']}")
-                try:
-                    st.write(f"**Current Block:** {collector.w3.eth.block_number}")
-                except:
-                    st.write("**Current Block:** Error fetching")
-                st.write(f"**Transactions Found in Scan:** {len(real_txs)}")
-                st.write(f"**Stored Transactions:** {len(st.session_state.system_state['real_transactions'])}")
-
-            # 2b. Trust Agent Detection
-            if st.session_state.system_state['trust_agent_active'] and real_txs:
-                for tx in real_txs:
-                    if "SUSPICIOUS" in tx.get('info', ''):
-                        attacker = tx['from']
-                        st.error(f"🚨 MALICIOUS TRANSACTION DETECTED from {attacker}!")
-                        
-                        # Execute Defense (Slash)
-                        try:
-                            trust_agent = collector.w3.eth.accounts[0] # Trust Agent is Account 0
-                            # Only slash if not already slashed recently (simple check)
-                            st.write(f"⚔️ Counter-measure initiating against {attacker}...")
-                            
-                            slash_tx = collector.contract.functions.slashNode(attacker).transact({'from': trust_agent})
-                            st.success(f"✅ Trust Agent SLASHED Malicious Node! (TX: {slash_tx.hex()[:10]}...)")
-                        except Exception as e:
-                            # likely already slashed or permission error
-                            st.warning(f"Defense System Note: {e}")
-
-            # 3. Perform Real Training Step
-            training_data = collector.execute_real_training_step()
-            if training_data:
-                st.session_state.system_state['real_model_updates'].insert(0, training_data)
-                
-                # Update training loss
-                st.session_state.system_state['training_loss'].append(training_data['training_loss'])
-                if len(st.session_state.system_state['training_loss']) > 20:
-                    st.session_state.system_state['training_loss'] = st.session_state.system_state['training_loss'][-20:]
-                
-                # Update training rounds
-                st.session_state.system_state['training_rounds'] += 1
-                
-                # Update global model version
-                if st.session_state.system_state['training_rounds'] % 5 == 0:
-                    version_num = st.session_state.system_state['training_rounds'] // 5 + 1
-                    st.session_state.system_state['global_model_version'] = f'v{version_num}.0'
-            
-            # 4. Enable Security Agents
-            st.session_state.system_state['trust_agent_active'] = True
-            st.session_state.system_state['healer_agent_active'] = True
-            
-            # 5. Local Node Status
-            if st.session_state.system_state['active_nodes'] == 0:
-                 st.session_state.system_state['active_nodes'] = 1
-            
-            node_name = f"Local_Node_{st.session_state.node_id}"
-            st.session_state.system_state['node_health'] = {node_name: 100}
-            st.session_state.system_state['security_score'] = 100
-            
-        time.sleep(1)
-        st.rerun()
 
 def display_real_blockchain():
     st.header("⛓️ Real Blockchain Activity")
@@ -633,43 +641,31 @@ def display_real_security(collector):
         
         leaderboard_data = []
         
-        # Check Node 1 and Node 2 for the demo leaderboard
+        # Check first 5 accounts for any registered nodes
         if st.session_state.system_state['blockchain_connected']:
-            # Debug: Print accounts
-            # print(f"DEBUG: Available accounts: {len(collector.w3.eth.accounts)}")
-            
-            for n_id in [1, 2]: 
+            for n_idx, acc in enumerate(collector.w3.eth.accounts[:5]): 
                 try:
-                    # Assuming standard mapping for demo: Node N -> Account N-1
-                    # This allows us to see the status of the "Other" node too
-                    if n_id <= len(collector.w3.eth.accounts):
-                        target_acc = collector.w3.eth.accounts[n_id - 1]
-                        # Call contract with explicit 'from'
-                        node_info = collector.contract.functions.getNodeInfo(target_acc).call({'from': target_acc})
-                        # node_info: (id, reputation, isBanned, nodeAddress)
+                    node_info = collector.contract.functions.getNodeInfo(acc).call({'from': acc})
+                    # node_info: (id, reputation, isBanned, nodeAddress)
+                    
+                    if node_info[0] == 0:
+                        continue # Skip unregistered accounts
                         
-                        status = "🟢 Good"
-                        score = node_info[1]
+                    status = "🟢 Good"
+                    score = node_info[1]
+                    
+                    if node_info[2]: # isBanned
+                        status = "💀 BANNED"
+                        score = 0
                         
-                        if node_info[2]: # isBanned
-                            status = "💀 BANNED"
-                            score = 0
-                        elif node_info[0] == 0:
-                            status = "⚪ Offline"
-                            score = 0
-                            
-                        leaderboard_data.append({
-                            "Node": f"Node {n_id}", 
-                            "Trust Score": score,
-                            "Status": status
-                        })
-                except Exception as e:
-                    print(f"DEBUG: Leaderboard error for Node {n_id}: {e}")
                     leaderboard_data.append({
-                        "Node": f"Node {n_id}", 
-                        "Trust Score": "N/A",
-                        "Status": "❓ Sync Error"
+                        "Node": f"Node {node_info[0]}", 
+                        "Trust Score": score,
+                        "Status": status,
+                        "Address": node_info[3][:10] + "..."
                     })
+                except Exception as e:
+                    pass
 
         if leaderboard_data:
             st.dataframe(
@@ -755,8 +751,65 @@ def main():
     with tab5:
         display_fraud_detection_tab()
     
-    # Auto-refresh
+    # --- Consolidated Background Processing ---
     if st.session_state.is_running:
+        st.markdown("---")
+        with st.status("🔄 AI & Blockchain Background Sync Active...", expanded=False) as status:
+            # 1. Fetch Real Transactions
+            real_txs = collector.get_real_transactions()
+            if real_txs:
+                existing_hashes = {tx['hash'] for tx in st.session_state.system_state['real_transactions']}
+                new_txs = [tx for tx in real_txs if tx['hash'] not in existing_hashes]
+                if new_txs:
+                    st.session_state.system_state['real_transactions'] = new_txs + st.session_state.system_state['real_transactions']
+                    st.session_state.system_state['real_transactions'] = st.session_state.system_state['real_transactions'][:10]
+            
+            # 2. Count Active Nodes on Blockchain
+            active_count = 0
+            detected_nodes = {}
+            if st.session_state.system_state['blockchain_connected']:
+                for acc_idx, acc in enumerate(collector.w3.eth.accounts[:5]): 
+                    try:
+                        node_info = collector.contract.functions.getNodeInfo(acc).call()
+                        if node_info[0] != 0: # ID is not 0 means registered
+                            active_count += 1
+                            detected_nodes[f"Node_{node_info[0]}"] = 100
+                    except:
+                        pass
+            
+            st.session_state.system_state['active_nodes'] = max(1 if st.session_state.is_running else 0, active_count)
+            if detected_nodes:
+                st.session_state.system_state['node_health'].update(detected_nodes)
+
+            # 3. Security Agent Defense
+            if st.session_state.system_state['trust_agent_active'] and real_txs:
+                for tx in real_txs:
+                    if "SUSPICIOUS" in tx.get('info', ''):
+                        attacker = tx['from']
+                        st.error(f"🚨 ALERT: Malicious Activity from {attacker}")
+                        try:
+                            trust_agent = collector.w3.eth.accounts[0]
+                            collector.contract.functions.slashNode(attacker).transact({'from': trust_agent})
+                        except:
+                            pass
+
+            # 3. Perform Training Round locally
+            st.write("🧠 Training next model round...")
+            training_data = collector.execute_real_training_step()
+            if training_data:
+                st.session_state.system_state['real_model_updates'].insert(0, training_data)
+                st.session_state.system_state['training_rounds'] += 1
+                
+                # Handle versioning
+                if st.session_state.system_state['training_rounds'] % 5 == 0:
+                    version_num = st.session_state.system_state['training_rounds'] // 5 + 1
+                    st.session_state.system_state['global_model_version'] = f'v{version_num}.0'
+            
+            st.session_state.system_state['trust_agent_active'] = True
+            st.session_state.system_state['healer_agent_active'] = True
+            status.update(label="✅ Cycle Complete. Refreshing UI...", state="complete")
+        
+        # Single point of refresh for the entire dashboard
         time.sleep(2)
         st.rerun()
 
@@ -869,6 +922,11 @@ def display_fraud_detection_tab():
             
             is_fraud = confidence > 0.45
             
+            try:
+                confidence = float(confidence)
+            except:
+                confidence = 0.0
+
             if is_fraud:
                 st.error(f"🚨 FRAUD DETECTED! (AI Confidence: {confidence*100:.1f}%)")
             else:
