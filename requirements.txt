@@ -1,0 +1,14 @@
+torch>=1.12.0
+torchvision>=0.13.0
+web3>=5.31.0
+streamlit>=1.28.0
+pandas>=1.5.0
+numpy>=1.21.0
+opacus>=0.14.0
+ipfshttpclient>=0.6.1
+plotly>=5.15.0
+requests>=2.28.0
+scikit-learn>=1.0.0
+scikit-learn>=1.1.0
+matplotlib>=3.5.0
+seaborn>=0.11.0

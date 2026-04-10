@@ -1,0 +1,21 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Solidity / Truffle
+build/
+.truffle/
+
+# Streamlit
+.streamlit/
+static/
+
+# Datasets (To prevent GitHub 100MB file limit errors)
+*.csv
+# OS
+.DS_Store
+Thumbs.db
